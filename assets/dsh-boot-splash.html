@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; media-src dsh-boot-clip: file:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>DSH Desktop</title>
+<style>
+	html, body {
+		margin: 0;
+		padding: 0;
+		height: 100%;
+		background: #000;
+		overflow: hidden;
+	}
+	#clip {
+		position: fixed;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		background: #000;
+		object-fit: cover;
+		opacity: 1;
+		transition: opacity 240ms ease;
+	}
+	html.dsh-splash-done #clip { opacity: 0; }
+	html.dsh-splash-done #hint { opacity: 0; }
+	#hint {
+		position: fixed;
+		right: 20px;
+		bottom: 16px;
+		font: 13px/1.5 -apple-system, "Segoe UI", system-ui, "Microsoft YaHei", sans-serif;
+		color: rgba(255, 255, 255, .5);
+		letter-spacing: .04em;
+		user-select: none;
+		opacity: 0;
+		transition: opacity 400ms ease;
+	}
+	body.dsh-ready #hint { opacity: 1; }
+</style>
+</head>
+<body>
+<video id="clip" autoplay muted playsinline preload="auto"></video>
+<div id="hint">点击或按 Esc 跳过</div>
+<script>
+	(function () {
+		var params = new URLSearchParams(location.search);
+		var clip = document.getElementById("clip");
+		var hint = document.getElementById("hint");
+		var skippable = params.get("skippable") !== "0";
+		var fallback = params.get("fallback");
+		var triedFallback = false;
+		var settled = false;
+		var lastProgress = Date.now();
+
+		clip.style.objectFit = params.get("fit") === "contain" ? "contain" : "cover";
+		if (!skippable) hint.style.display = "none";
+
+		window.__dshSplashState = null;
+
+		function report(kind, reason) {
+			if (settled) return;
+			settled = true;
+			// 千万别用 location.href = "dsh-boot-splash:..." 报信：Chromium 会把这种
+			// scheme 当成外部协议交给操作系统，Windows 会弹「获取打开此链接的应用」，
+			// 而主进程永远收不到通知（表现就是必须等 maxMs 超时才进软件）。
+			// 两条通道都写：全局变量（主进程 executeJavaScript 读）和 document.title
+			// （主进程 getTitle() 同步读，不受 JS 世界隔离影响）。
+			window.__dshSplashState = kind + ":" + reason;
+			document.title = "dsh-boot-splash:" + kind + ":" + reason;
+		}
+
+		/** 主进程收到 done/fail 都会放行；区分开只是为了日志能看出原因。 */
+		function done(reason) { report("done", reason); }
+		function failed(reason) { report("fail", reason); }
+
+		function start(source) {
+			lastProgress = Date.now();
+			clip.src = source;
+			var playing = clip.play();
+			if (playing && typeof playing.catch === "function") {
+				playing.catch(function () {
+					setTimeout(function () {
+						if (settled) return;
+						var retry = clip.play();
+						if (retry && typeof retry.catch === "function") retry.catch(function () { failed("autoplay-blocked"); });
+					}, 120);
+				});
+			}
+		}
+
+		clip.addEventListener("ended", function () { done("ended"); });
+		clip.addEventListener("loadeddata", function () {
+			lastProgress = Date.now();
+			document.body.classList.add("dsh-ready");
+		});
+		clip.addEventListener("timeupdate", function () { lastProgress = Date.now(); });
+		clip.addEventListener("playing", function () { lastProgress = Date.now(); });
+		clip.addEventListener("error", function () {
+			// 自定义协议不成还有 file:// 一条路；两条都失败才放行。
+			if (!triedFallback && fallback) {
+				triedFallback = true;
+				start(fallback);
+				return;
+			}
+			failed("media-error");
+		});
+
+		// 卡住看门狗：解码停了 / 容器没做 faststart 时，别把用户关在黑屏里。
+		setInterval(function () {
+			if (settled) return;
+			if (clip.readyState < 2) {
+				if (Date.now() - lastProgress > 6000) failed("stalled-metadata");
+				return;
+			}
+			if (Date.now() - lastProgress > 4000) failed("stalled-playback");
+		}, 500);
+
+		if (skippable) {
+			window.addEventListener("mousedown", function () { done("skipped"); });
+			window.addEventListener("keydown", function (event) {
+				if (event.key === "Escape" || event.key === " " || event.key === "Enter") done("skipped");
+			});
+		}
+
+		var src = params.get("src");
+		if (!src) {
+			if (fallback) { triedFallback = true; start(fallback); }
+			else failed("no-source");
+		} else {
+			start(src);
+		}
+	})();
+</script>
+</body>
+</html>

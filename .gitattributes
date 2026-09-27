@@ -1,0 +1,12 @@
+# 默认按文本处理、自动识别换行；二进制文件显式声明，避免被当成文本"修复"换行
+* text=auto
+*.mp4 binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
+
+# Windows 原生脚本固定用 CRLF：cmd.exe 对 LF 结尾的批处理在跳转/多行块上不可靠，
+# 而 PowerShell 在两种换行下都正常，统一成 CRLF 只是让检出结果确定。
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

@@ -1,0 +1,57 @@
+{
+  "name": "dsh-desktop-boot-splash",
+  "version": "1.0.0",
+  "description": "给 DSH Desktop 加开机动画：启动时先播片头，播完（或点击跳过）再显示主界面。以 DSH 插件形式分发，负责把补丁打到 Electron 壳上，并在应用更新后自动补回、卸载插件时自动清理。",
+  "type": "module",
+  "main": "./lib/index.js",
+  "bin": {
+    "dsh-boot-splash": "./lib/cli.js"
+  },
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./cli": "./lib/cli.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "assets",
+    "cordis.patch.yml",
+    "README.md",
+    "快速开始.md",
+    "LICENSE",
+    "install.ps1",
+    "install-plugin.ps1",
+    "安装插件.cmd",
+    "卸载插件.cmd"
+  ],
+  "license": "MIT",
+  "author": "LiLi-ZZC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LiLi-ZZC/dsh-desktop-boot-splash.git"
+  },
+  "homepage": "https://github.com/LiLi-ZZC/dsh-desktop-boot-splash#readme",
+  "bugs": {
+    "url": "https://github.com/LiLi-ZZC/dsh-desktop-boot-splash/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "desktop",
+    "boot-animation",
+    "splash",
+    "startup"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
