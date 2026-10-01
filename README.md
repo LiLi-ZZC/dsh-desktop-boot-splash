@@ -70,7 +70,14 @@ $dsh = (Get-ChildItem "$env:APPDATA\DSH Desktop\host-commands\desktop\generation
 >
 > 发布到 npm 之后也可以：`dsh plugin --profile desktop add dsh-desktop-boot-splash`。
 >
-> 想锁定版本就带 tag：`github:LiLi-ZZC/dsh-desktop-boot-splash#v1.0.0`。
+> **要不要带 tag？**
+>
+> - **不带 tag**（上面这条默认写法）= 跟随仓库默认分支的最新提交 → 现在装到的是 **1.2.0**；
+>   以后推了新版本，别人**新装**会直接拿到新版。
+> - **带 tag**（如 `#v1.2.0`）= 固定那一版，适合"发给别人装"或需要可复现的场景。
+>   历史上出现过的 tag 只有 `v1.0.0` 与 `v1.2.0`（见[仓库历史](#仓库历史为什么只有两个-tag)）。
+> - 注意：**已经装过的那份不会自动更新** —— 同一个 spec 再执行 `add` 只会报 "Already up to date"，
+>   更新必须 `remove` 再 `add`。
 
 **这条路的好处**：依赖在 profile 里记的是 `git+https://…#<commit>`，跟本地文件夹毫无关系 ——
 装完本机不需要留任何副本，删掉也不会有后患（对比 `file:` 方式，源目录一消失后续
