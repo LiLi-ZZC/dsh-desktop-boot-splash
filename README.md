@@ -3,6 +3,8 @@
 给 **DSH Desktop** 加一段真正的开机动画：启动软件时先播放片头，播完（或你点一下跳过）才出现主界面。
 它以 **DSH 插件**的形式分发，负责把补丁打到 Electron 壳上，并在**应用更新后自动补回**。
 
+> **平台：仅 Windows。** 只在 Windows 上开发与实测过；非 Windows 未支持、未验证（原因见[兼容性](#兼容性)）。
+
 - 想直接装：看 [安装](#安装)
 - 想换片子：看 [片源](#片源)
 - 更新后会不会失效：看 [为什么应用更新后还能用](#为什么应用更新后还能用)
@@ -18,7 +20,7 @@
 - 视频出错、加载失败、解码卡住、超过 `maxMs` → 立刻放行，绝不把你关在动画外面。
 - 每次启动都播。
 
-默认动画是插件自带的片头：1280×720 / 7.07 秒 / 1.38 MB，H.264 + AAC，faststart。想换成自己的片子见[片源](#片源)。
+默认动画是插件自带的片头：3840×2160 / 7.1 秒 / 31.0 MB，H.264 + AAC，faststart。想换成自己的片子见[片源](#片源)。
 
 ---
 
@@ -40,7 +42,15 @@ DSH 的插件运行在 `utilityProcess` 子进程和网页里；等它们拿到�
 
 ## 安装
 
-支持 Windows / macOS / Linux（补丁本身跨平台；`install.ps1` 是 Windows 专用）。
+> **平台：仅 Windows。** 本插件只在 Windows 上开发与实测过，非 Windows 请不要使用：
+>
+> - 安装脚本本身就是 Windows 专用（`install.ps1` / `安装插件.cmd`）。
+> - 补丁按 Electron 的 `resources\app` 布局实现；macOS 的 `.app/Contents/Resources/app` 没测过，
+>   而且**改写 `.app` 包内文件会破坏应用代码签名**，即使锚点匹配也不该这么做。
+> - Linux 未测试。
+>
+> （DSH Desktop 的壳代码里确实有 macOS/Linux 分支，但那是上游的事；本插件不对它们做任何承诺。
+> 细节见[兼容性](#兼容性)。）
 
 ### 路线一：从 GitHub 装（推荐：最省事，且不依赖本机任何文件夹）
 
@@ -175,12 +185,91 @@ node lib/cli.js status
   "maxMs": 15000,        // 最长等待，超时立刻进软件（1000–120000）
   "fit": "cover",        // cover = 填满窗口裁掉多余；contain = 完整显示，可能留黑边
   "skippable": true,     // false = 只能等它播完
-  "clip": null           // 指定片源：绝对路径，或 "builtin:<名字>"
+  "clip": null,          // 指定片源：绝对路径，或 "builtin:<名字>"
+  "rememberWindowState": true,  // 记住上次是不是最大化/全屏（见下）
+  "restoreFullScreen": false,   // 是否原样恢复"真全屏"（默认 false，见下）
+  "overscan": 8                 // 启动窗向外多出多少，用来盖掉 Windows 11 的窗口边框/圆角
 }
 ```
 
 配置**每次启动时读取**，改完下次启动生效，不用重打补丁。
 （文件带不带 UTF-8 BOM 都能读 —— 用记事本改过也没关系。）
+
+### 记住窗口的最大化 / 全屏状态
+
+DSH Desktop 自己只持久化窗口的**还原尺寸**（`main-window-state.json` 里只有 x/y/宽/高），
+**不记最大化/全屏**——所以你最大化之后关掉软件，下次打开会退回小窗。
+
+`rememberWindowState`（默认 `true`）由本插件补上这个能力：把上次是不是最大化/全屏记到
+`~/.dsh/boot-animation/window-state.json`，下次启动时**在显示主窗口之前**恢复（所以不会先闪
+一下小窗再弹大）。改为 `false` 可关闭。
+
+> 实现上是**订阅窗口事件**（`maximize`/`unmaximize`/`enter-full-screen`/`leave-full-screen`/`close`）
+> 而不是退出钩子：桌面壳有些退出路径走 `app.exit()`，`before-quit` 不一定触发，事件则一定会。
+>
+> 这个能力**不依赖启动窗**：把 `enabled` 设为 `false` 也照样生效。恢复的时机是桌面壳
+> 调用 `revealApplication()` 的那一刻（正好在窗口 `show()` 之前），所以不会先闪一下小窗。
+
+#### 全屏默认不原样恢复（会退化成最大化）
+
+`restoreFullScreen` 默认 `false`。原因是**这个壳在 Windows 上没有退出全屏的入口**：菜单里的
+`togglefullscreen` role 没有加速键，而主窗口是无边框自绘标题栏 —— 一旦进入全屏，窗口按钮和
+菜单都消失，用户就被困在里面了。所以默认行为是"上次全屏 → 这次最大化"，仍然可以退出；
+确实想原样恢复真全屏时再把它设为 `true`。
+
+> 另外，只要窗口进入全屏，插件会给它挂一个 **F11 切换**（`before-input-event`），
+> 作为一个兜底的退出方式 —— 壳本身没提供。
+
+#### 为什么不能在"窗口还没显示"时改窗口状态
+
+`maximize()` 和 `setFullScreen(true)` 在隐藏窗口上调用，Windows 会把主窗口**直接显示出来**。
+后果不只是"被盖住"：Chromium 会**降低被遮挡窗口的媒体优先级**，视频 `timeupdate` 随之停摆，
+启动窗页面的停滞看门狗（4 秒）随后报 `stalled-playback` 收尾 —— 于是表现为"动画只播几秒就进软件"。
+
+所以恢复动作一律推迟到"即将 `show()` 的同一拍"（`applyPendingWindowState`），
+`hold()` 里只登记意图、绝不碰窗口。`test-resolve.mjs` 里有源码级不变量检查，防止这个坑再次回归。
+
+`last-splash.json` 里的 `mainWindowShownBeforeFinish` 就是这件事的探针：它一旦为 `true`，
+说明收尾之前主窗口已经自己露过脸了。
+
+### 启动窗的尺寸 / 层级跟着窗口状态走
+
+启动窗不是简单地套用 `main-window-state.json` 里的还原尺寸 —— 那样在"上次是最大化/全屏"时，
+动画只会出现在屏幕中间一块。实际规则：
+
+| 上次的状态 | 启动窗尺寸 | 置顶 |
+|---|---|---|
+| 全屏 | **整屏**（含任务栏区域）四面再向外多 `overscan` | 是 |
+| 最大化 | **显示器工作区**再向外多 `overscan`（默认 8） | 否 |
+| 普通窗口 | **原样跟随主窗口**（哪怕有一部分在屏幕外也对齐） | 否 |
+| 窗口几乎整个在屏幕外 | 夹回工作区，保证动画还看得见 | 否 |
+| 没有记录 | 工作区内居中 1280×720 | 否 |
+
+两点容易踩的坑：
+
+- **尺寸要跟随，而不是夹进屏幕**。把窗口拖到偏下、有一部分在屏幕外时，如果启动窗被"夹"回来，
+  它就和主窗口错位了 —— 看起来像"动画不跟随窗口"。
+- **除全屏外不要置顶**。`alwaysOnTop` 的窗口会压过任务栏；普通窗口压在任务栏区域时任务栏本来就在
+  上面（主窗口就是这个行为），所以只要不置顶，连 1px 的边框重叠都不会盖住任务栏。
+
+尺寸按 Electron 的 DIP 计算（125% 缩放的 2560×1440 屏 → 工作区 2048×1104），和主窗口一致。
+
+#### 为什么要 `overscan`
+
+Windows 11 会给窗口画一条 DWM 亮边框并加圆角。启动窗如果**正好**卡在工作区边界上，这两样就会露出来：
+屏幕最上面一条亮线、左上角漏出后面的桌面。实测最大化窗口的边框在 125% 缩放下每边 7 px
+（`SM_CXSIZEFRAME + SM_CXPADDEDBORDER` = 8），所以默认让启动窗向外多出 8：
+
+- **最大化**：上/左/右各多 8，下边也多 8 —— 下面的 8 px 会盖到任务栏顶部，但启动窗是
+  **非置顶**的，任务栏（topmost）仍然画在最上层，所以看不出来，同时把底部的边框线也藏掉了。
+- **全屏**：四面各多 8（全屏本来就该盖住任务栏）。
+- **普通窗口**：不加 —— 必须原样跟随主窗口，圆角和主窗口自己的圆角重合，反而自然。
+
+另外还会尝试 `setRoundedCorners(false)` 直接关掉 Windows 11 的圆角（老版本 Electron 没这个 API，
+靠 `overscan` 也能达到同样效果）。`overscan: 0` 可恢复旧行为。
+每次启动还会把实际用的几何落一份到 `~/.dsh/boot-animation/last-splash.json`（含窗口状态、
+工作区/整屏、`scaleFactor`、结束原因），排查"动画位置不对"时先看它 —— 主进程的 `console`
+输出不一定会进桌面壳的日志文件。
 
 ---
 
@@ -206,8 +295,7 @@ node lib/cli.js status
 ### 放自己的视频
 
 ```
-Windows       C:\Users\<你>\.dsh\boot-animation\videos\
-macOS / Linux ~/.dsh/boot-animation/videos/
+C:\Users\<你>\.dsh\boot-animation\videos\
 ```
 
 丢进去之后：装了 `dsh-boot-animation` 可以在它的片库面板点「刷新」并选中；没装的话规则 5 会直接取
@@ -234,7 +322,7 @@ ffmpeg -i 原片.mp4 -c copy -movflags +faststart 修好的.mp4
 ### 插件自带的默认片头
 
 插件包里带了一段片头 `assets/dsh-boot-splash-default.mp4`
-（1280×720 / 7.07 秒 / 1.38 MB，H.264 + AAC，faststart；sha256 以 `00603f6424644c4b` 开头），
+（3840×2160 / 7.1 秒 / 31.0 MB，H.264 + AAC，faststart；sha256 以 `c02a8af8b42e9888` 开头），
 安装时一并部署到 `resources\app\lib\`，它就是**本插件的默认片源**。
 
 它解决两件事：
@@ -280,6 +368,7 @@ DSH Desktop : C:\Users\<你>\AppData\Local\Programs\DSH Desktop\resources\app
 
 | 现象 | 处理 |
 |---|---|
+| 最大化后下次打开变小窗 | 确认 `splash.json` 的 `rememberWindowState` 不是 `false`；删除 `~/.dsh/boot-animation/window-state.json` 可重置记忆 |
 | 完全没动画 | 1) 确认真的完全退出并重启过；2) `node lib/cli.js status` 看补丁是否"已就位"；3) 看 `splash.json` 的 `enabled`；4) 看日志里有没有 `dsh-boot-splash:` |
 | 播完卡住、要等十几秒才进软件 | 页面回话通道断了。日志搜 `finish (`，正常应出现 `finish (title:done:ended)`；只有 `finish (timeout)` 说明回话没到 |
 | 弹「获取打开此链接的应用」 | 页面在用导航回话（旧版本 bug）。重跑 `install.ps1` / `cli.js patch` 更新负载 |
@@ -414,6 +503,72 @@ node lib/cli.js patch     # 把新负载部署到真实安装
   而 `pluginRoots()` 硬用 `homedir()`，DSH_HOME 不在默认位置时会出现"片源找得到、插件的内置片段找不到"。
 - **默认片源的优先级是刻意的**：插件自带的默认片头要排在 `dsh-boot-animation` 的 `brand` 兜底之前，
   否则用户的"没选过"状态会被另一个插件的默认值接管，装完看不到本插件的默认片。
+
+---
+
+## 兼容性
+
+### 分辨率 / 缩放 / 多显示器：自动适配
+
+代码里**没有任何硬编码的分辨率或缩放比例**，几何全部在运行时从 Electron 的 `screen` API 取，
+单位是 DIP（逻辑像素）：
+
+| 机制 | 效果 |
+|---|---|
+| `screen.getDisplayMatching()` | 动画出现在**主窗口所在那块显示器**上 |
+| `workArea` / `bounds` | 1280×720、4K、带鱼屏、任务栏在左/右/竖排都能算对 |
+| 显示器自带坐标 | 副屏在主屏左侧（负坐标）也正确 |
+| `overscan: 8`（DIP） | 100% 缩放下约等于 DWM 边框宽度，125%/150%/200% 下余量更大 |
+| 视频用 `object-fit: cover` | 窗口多大就铺多大，任何宽高比都不留边 |
+
+**未验证的保留意见**：混合 DPI 的多显示器（例如一块 100% + 一块 150%）—— Electron 在这类配置下有
+已知的 DIP 坐标换算怪癖，本插件没有在那种配置上实测过。最坏情况是位置略有偏差，不会崩。
+
+### DSH Desktop 版本差异
+
+补丁**锚点匹配**，不锁版本。为了容忍相邻版本，锚点是"宽松"的：
+
+- electron 的 import：只要存在 `import { ... } from "electron";` 就算数（**增删导入不影响**）
+- `revealApplication`：认 `function revealApplication(...)` 和类方法两种写法，**参数列表怎么写都行**
+- `await app.whenReady();`：优先选后面紧跟 `startupStage` 的那个；找不到就回退到第一个并记日志
+
+版本差异导致的两种结果：
+
+| 情况 | 结果 |
+|---|---|
+| 锚点都在（大多数相邻版本） | 正常打上补丁 ✓ |
+| 锚点变了（结构性改动） | 补丁**整体放弃**并写明原因 —— **没有动画，但软件照常启动** ✓ |
+
+`node test-compat.mjs` 用合成的壳源码专门回归这件事。
+
+### 应用更新之后
+
+桌面壳更新会重写 `resources\app`，补丁和负载都会被清掉。插件（装在 profile 的 `node_modules` 里，
+不受更新影响）会在**每次启动时自愈**：
+
+> ⚠️ 补丁是在插件加载时补回的，而那时 Electron 主进程已经启动完毕 —— 所以**更新后的第一次启动通常
+> 没有动画，第二次启动才有**。这不是故障，等一次重启即可。
+
+### 其他
+
+- **仅 Windows（本插件唯一支持并实测过的平台）**：
+  - 安装脚本是 PowerShell / `安装插件.cmd`（Windows 专用）；
+  - 补丁按 Electron 的 `resources\app` 布局实现，macOS 的 `.app/Contents/Resources/app` 未测试，
+    且**改写 `.app` 包内文件会破坏代码签名** —— 所以即使锚点匹配也不要用；
+  - Linux 未测试；
+  - DSH Desktop 壳代码里虽有 macOS/Linux 分支（`darwin` 22 处 / `linux` 9 处），那是上游的实现，
+    本插件不对非 Windows 做任何承诺。
+- **写权限**：补丁要写 `<AppDir>\resources\app\lib\`。装在 `%LOCALAPPDATA%\Programs`（默认）普通权限即可；
+  装在 `C:\Program Files` 需要管理员运行一次（否则只是没有动画）。
+- **性能**：自带 4K72fps 片头需要硬件解码，老核显可能掉帧 —— 换掉片头即可，与功能无关。
+- **杀软**：改写应用目录可能触发告警，属正常现象。
+- 首次使用无需配置：没有 `splash.json` 时用默认值，开箱即播自带片头。
+## 已知限制
+
+- **"上次全屏"默认恢复成最大化**：见上面的 `restoreFullScreen`。想完全原样恢复就把配置打开。
+- **启动窗只在主窗口显示之前存在**：如果桌面壳某次启动不走 `revealApplication()`（例如 `--require` 之类的后台启动），启动窗和窗口状态记忆都不会介入。
+- **4K 默认片头让仓库变大**：默认片头 31 MB（4K，FlashVSR 超分片源，CRF 18 重编码），`git clone` / 插件安装都要拉这一份。
+  想瘦身就换成 1080p/1440p 版本再 `node lib/cli.js patch`。注意**每次换片头都会在 git 历史里留下旧的那份**，历史体积只增不减。
 
 ---
 

@@ -26,7 +26,15 @@ const DEFAULT_CONFIG = {
 	maxMs: 15000,
 	fit: "cover",
 	skippable: true,
-	clip: null
+	clip: null,
+	/** 记住主窗口上次是不是最大化/全屏 —— 桌面壳自己只持久化 restored bounds，不记这个。 */
+	rememberWindowState: true,
+	/** 默认**不**恢复真全屏：这个壳没有退出全屏的入口（F11/菜单都没有），恢复真全屏会把用户困住。
+	 *  默认行为是"上次全屏 → 这次最大化"，仍然可退出；想要原样恢复就把这项设为 true。 */
+	restoreFullScreen: false,
+	/** 让启动窗比目标区域多出这么多（DIP），把 Windows 11 的 DWM 亮边框和圆角推到屏幕外。
+	 *  最大化只用在上/左/右（下面就是任务栏，不占它的位置）；真全屏四面都放大。 */
+	overscan: 8
 };
 
 const MIME_TYPES = new Map([
@@ -161,6 +169,9 @@ export function readSplashConfig() {
 	if (Number.isSafeInteger(parsed.maxMs) && parsed.maxMs >= 1000 && parsed.maxMs <= 120000) config.maxMs = parsed.maxMs;
 	if (parsed.fit === "contain") config.fit = "contain";
 	if (parsed.skippable === false) config.skippable = false;
+	if (parsed.rememberWindowState === false) config.rememberWindowState = false;
+	if (parsed.restoreFullScreen === true) config.restoreFullScreen = true;
+	if (Number.isSafeInteger(parsed.overscan) && parsed.overscan >= 0 && parsed.overscan <= 64) config.overscan = parsed.overscan;
 	if (typeof parsed.clip === "string" && parsed.clip.trim() !== "") config.clip = parsed.clip.trim();
 	return config;
 }
@@ -300,4 +311,61 @@ export function readMainWindowBounds(userDataDirectory) {
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * 算出启动窗该占多大 —— 必须和"主窗口马上会变成的样子"一致，否则会出现
+ * "动画只在中间一块"或者"动画盖住任务栏"。
+ *
+ *  - 上次是**全屏**  → 整块屏幕（含任务栏区域）再向外多出 `overscan`
+ *  - 上次是**最大化** → 显示器工作区（不含任务栏），并向外多出 `overscan` 以盖住 DWM 边框/圆角
+ *  - 普通窗口       → **原样跟随主窗口**（哪怕有一部分在屏幕外，也要对齐，
+ *                     否则动画会跑到窗口之外）；只有几乎整个都在屏幕外时，
+ *                     才夹回工作区，保证动画还看得见。
+ *
+ * 纯函数：显示器相关的取值留在调用侧（Electron 的 screen）。
+ * @param {{savedBounds?: {x:number,y:number,width:number,height:number}|null, windowState?: {maximized?:boolean,fullScreen?:boolean}|null, workArea: {x:number,y:number,width:number,height:number}, displayBounds?: {x:number,y:number,width:number,height:number}|null}} input
+ */
+export function computeSplashBounds({ savedBounds = null, windowState = null, workArea, displayBounds = null, overscan = 0 }) {
+	const o = Number.isSafeInteger(overscan) && overscan > 0 ? overscan : 0;
+	if (isRecord(windowState) && windowState.fullScreen === true) {
+		// 全屏覆盖任务栏，所以用整屏；拿不到整屏时退回工作区（至少不比工作区小）。
+		const rect = isRecord(displayBounds) ? displayBounds : workArea;
+		// 四面都放大：否则 DWM 的亮边框和圆角会露在屏幕四边。
+		return { x: rect.x - o, y: rect.y - o, width: rect.width + o * 2, height: rect.height + o * 2 };
+	}
+	if (isRecord(windowState) && windowState.maximized === true) {
+		// 四面各多 o：底边会伸进任务栏 o px，但启动窗非置顶、任务栏永远在上层，所以看不出来，
+		// 同时把底部的 DWM 边框线也藏到任务栏后面。注意 y 和 height 都要 +o，别互相抵消。
+		return { x: workArea.x - o, y: workArea.y - o, width: workArea.width + o * 2, height: workArea.height + o * 2 };
+	}
+	// 普通窗口：只要还看得见四分之一以上，就完全不偏不倚地跟随它。
+	const screenRect = isRecord(displayBounds) ? displayBounds : workArea;
+	if (savedBounds !== null && visibleRatio(savedBounds, screenRect) >= 0.25) {
+		return { x: savedBounds.x, y: savedBounds.y, width: savedBounds.width, height: savedBounds.height };
+	}
+	const fallbackWidth = Math.min(1280, workArea.width);
+	const fallbackHeight = Math.min(720, workArea.height);
+	const base = savedBounds === null ? {
+		x: workArea.x + Math.round((workArea.width - fallbackWidth) / 2),
+		y: workArea.y + Math.round((workArea.height - fallbackHeight) / 2),
+		width: fallbackWidth,
+		height: fallbackHeight
+	} : savedBounds;
+	const width = Math.max(320, Math.min(base.width, workArea.width));
+	const height = Math.max(240, Math.min(base.height, workArea.height));
+	return {
+		x: Math.min(Math.max(base.x, workArea.x), workArea.x + workArea.width - width),
+		y: Math.min(Math.max(base.y, workArea.y), workArea.y + workArea.height - height),
+		width,
+		height
+	};
+}
+
+/** 这个矩形有多大比例落在给定矩形里（判断窗口是不是几乎整个在屏幕外）。 */
+function visibleRatio(rect, area) {
+	const width = Math.min(rect.x + rect.width, area.x + area.width) - Math.max(rect.x, area.x);
+	const height = Math.min(rect.y + rect.height, area.y + area.height) - Math.max(rect.y, area.y);
+	if (width <= 0 || height <= 0) return 0;
+	return (width * height) / (rect.width * rect.height);
 }

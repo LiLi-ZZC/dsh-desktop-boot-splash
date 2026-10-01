@@ -60,14 +60,22 @@ const pristineMain = sha(join(libDir, "main.js"));
 const pristineRuntime = sha(join(libDir, liveRuntime));
 console.log(`沙箱: ${root}`);
 console.log(`干净原文件: main.js=${size(join(libDir, "main.js"))} bytes  ${liveRuntime}=${size(join(libDir, liveRuntime))} bytes`);
-check("干净原文件尺寸符合官方记录", size(join(libDir, "main.js")) === 208339 && size(join(libDir, liveRuntime)) === 156343);
+// 不写死字节数：桌面壳会更新（2.0.15 → 2.0.16 …），写死等于每次上游更新都误报。
+// 这里只断言"结构对得上"：原文件非空、且补丁锚点都在（真正的保证是下面"打补丁→逐字节还原"那几项）。
+const pristineMainText = readFileSync(join(libDir, "main.js"), "utf8");
+const pristineRuntimeText = readFileSync(join(libDir, liveRuntime), "utf8");
+check("干净原文件非空", size(join(libDir, "main.js")) > 100000 && size(join(libDir, liveRuntime)) > 100000);
+check("干净原文件含 electron import 锚点", /^import\s*\{[^}]*\}\s*from\s*"electron";/mu.test(pristineMainText));
+check("干净原文件含 whenReady 锚点", pristineMainText.includes("await app.whenReady();"));
+check("干净原文件含 revealApplication 锚点", /\brevealApplication\s*\(/u.test(pristineRuntimeText));
 
 // ---------------------------------------------------------------- 1. 定位
 const fakeExe = join(sandbox, "DSH Desktop.exe");
 writeFileSync(fakeExe, "");
 const located = locateDesktopApp({ execPath: fakeExe });
 check("locateDesktopApp 找到桌面壳", located !== null && located.appDir === appDir, located === null ? "" : located.appDir);
-check("locateDesktopApp 读出应用版本", located !== null && located.version === "2.0.15", located?.version ?? "");
+// 同样不写死版本号：只要求读得到形如 x.y.z 的版本（2.0.15 / 2.0.16 / …）
+check("locateDesktopApp 读出应用版本", located !== null && /^\d+\.\d+\.\d+/u.test(located.version ?? ""), located?.version ?? "");
 check("非桌面壳目录不会被误认", locateDesktopApp({ execPath: join(root, "nope", "other.exe") }) === null);
 
 // ---------------------------------------------------------------- 2. 打补丁
@@ -148,9 +156,9 @@ check("状态文件记录了 profileDir", state.profileDir === profileDir);
 
 check("插件还在时不算孤儿", detectOrphan(libDir) === null);
 check("install.ps1 装的补丁永不自清理", (() => {
-	writeFileSync(join(libDir, "dsh-boot-splash-state.json"), JSON.stringify({ managedBy: "script", profileDir, appVersion: "2.0.15" }));
+	writeFileSync(join(libDir, "dsh-boot-splash-state.json"), JSON.stringify({ managedBy: "script", profileDir, appVersion: "0.0.0-test" }));
 	const verdict = detectOrphan(libDir) === null;
-	writeFileSync(join(libDir, "dsh-boot-splash-state.json"), JSON.stringify({ managedBy: "plugin", profileDir, appVersion: "2.0.15" }));
+	writeFileSync(join(libDir, "dsh-boot-splash-state.json"), JSON.stringify({ managedBy: "plugin", profileDir, appVersion: "0.0.0-test" }));
 	return verdict;
 })());
 
