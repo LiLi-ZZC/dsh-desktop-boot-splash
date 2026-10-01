@@ -216,6 +216,15 @@ DSH Desktop 自己只持久化窗口的**还原尺寸**（`main-window-state.jso
 >
 > 这个能力**不依赖启动窗**：把 `enabled` 设为 `false` 也照样生效。恢复的时机是桌面壳
 > 调用 `revealApplication()` 的那一刻（正好在窗口 `show()` 之前），所以不会先闪一下小窗。
+>
+> **慢机器上的"晚到的 reveal"**：宿主启动可能比片头更久（实测有 host-boot 9.4 秒、主窗口
+> 11.7 秒才 reveal 的）。这时启动窗早就自然播完了，恢复动作只能等窗口 `show()` 之后补上 ——
+> 可能出现**一瞬未最大化**再变最大化。记录侧不受影响（`window-state.json` 照常写）；
+> 诊断文件里的 `windowStateRegisteredAfterFinish: true` 就表示这次走的是这条路径。
+>
+> ⚠️ v1.2.0 及更早的版本在这里有个真实 bug：`hold()` 开头的 `state.finished` 提前返回排在窗口
+> 状态逻辑**之前**，于是"晚到的 reveal"会让**记录与恢复两侧一起失效**（表现为这个功能完全不存在）。
+> v1.2.1 已修，并加了行为级回归测试（`test-resolve.mjs` 里把 `hold()` 抽出来用 mock 跑）。
 
 #### 全屏默认不原样恢复（会退化成最大化）
 
@@ -375,7 +384,7 @@ DSH Desktop : C:\Users\<你>\AppData\Local\Programs\DSH Desktop\resources\app
 
 | 现象 | 处理 |
 |---|---|
-| 最大化后下次打开变小窗 | 确认 `splash.json` 的 `rememberWindowState` 不是 `false`；删除 `~/.dsh/boot-animation/window-state.json` 可重置记忆 |
+| 最大化后下次打开变小窗 | 确认 `splash.json` 的 `rememberWindowState` 不是 `false`；看 `last-splash.json` 里的 `windowStateRegisteredAt` / `restoredWindowState`；删除 `~/.dsh/boot-animation/window-state.json` 可重置记忆 |
 | 完全没动画 | 1) 确认真的完全退出并重启过；2) `node lib/cli.js status` 看补丁是否"已就位"；3) 看 `splash.json` 的 `enabled`；4) 看日志里有没有 `dsh-boot-splash:` |
 | 播完卡住、要等十几秒才进软件 | 页面回话通道断了。日志搜 `finish (`，正常应出现 `finish (title:done:ended)`；只有 `finish (timeout)` 说明回话没到 |
 | 弹「获取打开此链接的应用」 | 页面在用导航回话（旧版本 bug）。重跑 `install.ps1` / `cli.js patch` 更新负载 |

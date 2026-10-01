@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop-boot-splash",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "给 DSH Desktop 加开机动画：启动时先播片头，播完（或点击跳过）再显示主界面。以 DSH 插件形式分发，负责把补丁打到 Electron 壳上，并在应用更新后自动补回、卸载插件时自动清理。",
   "type": "module",
   "main": "./lib/index.js",

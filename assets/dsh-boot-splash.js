@@ -147,7 +147,14 @@ function effectiveWindowState(saved, config) {
  */
 function planWindowRestore() {
 	const saved = effectiveWindowState(readWindowState(), state?.config ?? null);
-	if (state !== null) state.pendingRestore = saved;
+	if (state !== null) {
+		state.pendingRestore = saved;
+		// 立刻把"恢复意图"记下来：诊断文件是在恢复动作之前写的，
+		// 不在这里记的话，明明恢复了也会显示成 null。
+		if (state.restoredKind === null || state.restoredKind === void 0) {
+			state.restoredKind = saved === null ? null : saved.fullScreen === true ? "fullscreen(pending)" : saved.maximized === true ? "maximized(pending)" : null;
+		}
+	}
 	return saved;
 }
 
@@ -311,19 +318,21 @@ function startStatePolling(splash) {
  * 被 electron-runtime 的 revealApplication() 调用：true = 这次先别显示。
  * 只拦第一次显示；启动窗已经结束时一律放行。多个窗口被拦时全部记下来，结束时一起放行。
  *
- * 窗口状态的记忆/恢复也挂在这里，而且**和启动窗开不开无关**：enabled:false 时我们只是
- * 不拦（返回 false），仍然会登记恢复意图，并在窗口真正 show 的那一刻补上。
+ * 窗口状态的记忆/恢复挂在这里，而且**和启动窗的生死无关**，所以它必须排在
+ * 任何"提前返回"之前 —— 慢机器上宿主启动可能比片头还久（实测有 host-boot 9.4 秒、
+ * 主窗口 11.7 秒才 reveal 的），那时 state.finished 早已是 true，一旦提前返回，
+ * 「记录」和「恢复」两侧就一起失效了（这正是 v1.2.0 的一个真实 bug）。
+ *
  * 注意这里绝对不能动窗口 —— 见 planWindowRestore() 的注释。
  */
 function hold(window) {
-	if (state === null || state.finished) return false;
-	if (!alive(window)) return state.armed;
+	if (state === null) return false;
 	if (state.config !== null && state.config.rememberWindowState !== false && isMainWindowLike(window)) {
 		trackWindowState(window);
 		if (state.restored !== true) {
 			state.restored = true;
-			planWindowRestore(window);
-			// 兜底：如果这次没被拦（启动窗关着），等壳自己 show 的时候再恢复。
+			planWindowRestore();
+			// 兜底：没被拦（启动窗已结束 / enabled:false）时，等壳自己 show 的那一刻再恢复。
 			try {
 				window.once("show", () => {
 					if (state?.pendingRestore !== null && state?.pendingRestore !== void 0) applyPendingWindowState(window);
@@ -331,8 +340,12 @@ function hold(window) {
 			} catch {
 				// 挂不上就算了。
 			}
+			// 启动窗已经结束了才登记 —— 说明是"晚到的 reveal"，单独记一笔便于排查。
+			if (state.finished) noteWindowStateRegistration();
 		}
 	}
+	if (state.finished) return false;
+	if (!alive(window)) return state.armed;
 	if (!state.armed) return false;
 	if (!state.pending.includes(window)) state.pending.push(window);
 	return true;
@@ -398,8 +411,29 @@ function noteSplashFinish(reason) {
 			mainWindowShownBeforeFinish: state?.mainShownBeforeFinish === true,
 			finishReason: reason,
 			restoredWindowState: state?.restoredKind ?? null,
+			pendingRestore: state?.pendingRestore ?? null,
 			splashBoundsRequested: state?.splashBoundsRequested ?? null,
 			splashBoundsActual: state?.splashBoundsActual ?? null
+		}, null, 2)}\n`, "utf8");
+	} catch {
+		// 诊断文件不存在或写不进去都不该影响启动。
+	}
+}
+
+/**
+ * 留痕：窗口状态是在**启动窗结束之后**才登记的（"晚到的 reveal"）。
+ * 慢机器上宿主启动可能比片头更久（实测有 host-boot 9.4 秒、主窗口 11.7 秒才 reveal 的），
+ * 那属于正常路径；看到这两个字段就说明该机器是这种情况，也便于确认这个 bug 已修复。
+ */
+function noteWindowStateRegistration() {
+	try {
+		const path = join(bootAnimationDir(), SPLASH_DIAGNOSTICS_FILE);
+		const current = JSON.parse(readFileSync(path, "utf8").replace(/^\uFEFF/u, ""));
+		writeFileSync(path, `${JSON.stringify({
+			...current,
+			windowStateRegisteredAt: new Date().toISOString(),
+			windowStateRegisteredAfterFinish: true,
+			pendingRestore: state?.pendingRestore ?? null
 		}, null, 2)}\n`, "utf8");
 	} catch {
 		// 诊断文件不存在或写不进去都不该影响启动。

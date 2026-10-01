@@ -104,9 +104,75 @@ const invariants = [
 	["诊断记录收尾前的抓拍值", payloadSource.includes("state.mainShownBeforeFinish = state.mainShownAt !== null")],
 	["启动窗把 overscan 传进几何计算", payloadSource.includes("overscan: state?.config?.overscan ?? 0")],
 	["启动窗尝试关掉 Windows 11 圆角", payloadSource.includes("setRoundedCorners(false)")],
-	["启动窗显示后回读 OS 实际给的矩形", payloadSource.includes("splash.setBounds(requestedBounds)")]
+	["启动窗显示后回读 OS 实际给的矩形", payloadSource.includes("splash.setBounds(requestedBounds)")],
+	["hold() 的窗口状态逻辑排在 state.finished 提前返回之前", holdBody !== null && holdBody.includes("if (state.finished) return false;") && holdBody.indexOf("trackWindowState") < holdBody.indexOf("if (state.finished) return false;")]
 ];
 for (const [name, ok] of invariants) {
+	if (!ok) bad += 1;
+	console.log(`${ok ? "ok  " : "FAIL"} ${name}`);
+}
+
+// ── 窗口状态记忆：行为级回归（v1.2.0 的真实 bug） ─────────────────────────────
+// 慢机器上宿主启动可能比片头更久：主窗口 reveal 时 state.finished 已经是 true。
+// 旧代码把 `if (state.finished) return false;` 放在窗口状态逻辑之前 → 「记录」和「恢复」两侧
+// 一起失效（用户看到的是"这个功能完全不存在"）。这里把 hold() 从源码里抽出来，用 mock 直接跑。
+const holdDeclaration = (() => {
+	const start = payloadSource.indexOf("function hold(");
+	if (start < 0) return null;
+	let depth = 0;
+	const from = payloadSource.indexOf("{", start);
+	for (let index = from; index < payloadSource.length; index += 1) {
+		if (payloadSource[index] === "{") depth += 1;
+		else if (payloadSource[index] === "}") {
+			depth -= 1;
+			if (depth === 0) return payloadSource.slice(start, index + 1);
+		}
+	}
+	return null;
+})();
+let makeHold = null;
+try {
+	// hold() 会引用 state / 几个模块级函数，这里用外层函数的参数把它们注进去（闭包）。
+	makeHold = new Function(
+		"state", "isMainWindowLike", "trackWindowState", "planWindowRestore", "applyPendingWindowState", "noteWindowStateRegistration", "alive",
+		`${holdDeclaration}\nreturn hold;`
+	);
+} catch {
+	makeHold = null;
+}
+const runHold = (state, { mainLike = true } = {}) => {
+	const calls = { track: 0, plan: 0, apply: 0, note: 0 };
+	if (makeHold === null) return { calls, held: null };
+	const hold = makeHold(
+		state,
+		() => mainLike,
+		() => { calls.track += 1; },
+		() => { calls.plan += 1; },
+		() => { calls.apply += 1; },
+		() => { calls.note += 1; },
+		() => true
+	);
+	const held = hold({ once: () => {} });
+	return { calls, held };
+};
+const stateWith = (over = {}) => ({ finished: false, config: { rememberWindowState: true }, restored: false, armed: true, pending: [], mainShownBeforeFinish: false, ...over });
+const windowStateCases = [
+	["晚到的 reveal（finished=true）仍要登记窗口状态", () => { const r = runHold(stateWith({ finished: true })); return r.calls.track === 1 && r.calls.plan === 1 && r.held === false; }],
+	["晚到的 reveal 会留一笔诊断（windowStateRegisteredAt）", () => runHold(stateWith({ finished: true })).calls.note === 1],
+	["启动窗还在时照常登记，并拦下窗口", () => { const r = runHold(stateWith()); return r.calls.track === 1 && r.held === true; }],
+	["启动窗还在时不写那条晚到诊断", () => runHold(stateWith()).calls.note === 0],
+	["rememberWindowState:false 时完全不登记", () => runHold(stateWith({ config: { rememberWindowState: false } })).calls.track === 0],
+	["插件已卸载（config=null）时不登记", () => runHold(stateWith({ config: null })).calls.track === 0],
+	["state 还没初始化时不炸、也不拦", () => { const r = runHold(null); return r.calls.track === 0 && r.held === false; }],
+	["非主窗口（有父窗口）不登记", () => runHold(stateWith({ finished: true }), { mainLike: false }).calls.track === 0]
+];
+for (const [name, run] of windowStateCases) {
+	let ok = false;
+	try {
+		ok = run() === true;
+	} catch {
+		ok = false;
+	}
 	if (!ok) bad += 1;
 	console.log(`${ok ? "ok  " : "FAIL"} ${name}`);
 }
